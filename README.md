@@ -158,6 +158,38 @@ resources:
 - Filtered array: `.status.conditions[?(@.type=="Ready")].status`
 - Age (special): `.metadata.creationTimestamp` (auto-formatted as age)
 
+## Watched Resources
+
+By default, kfzf watches these resource types:
+- pods, services, configmaps, secrets
+- namespaces, nodes
+- deployments, statefulsets, daemonsets
+
+**What happens with unwatched resources?**
+
+When you try to complete a resource type that isn't being watched, you'll get empty results. To add more resource types:
+
+```bash
+# Start watching additional resources
+kfzf watch replicasets jobs cronjobs
+
+# Stop watching resources
+kfzf watch --stop replicasets
+
+# Check what's being watched
+kfzf status
+```
+
+Watches persist as long as the server is running. For CRDs and other resource types, you can add them dynamically:
+
+```bash
+# Watch CNPG clusters
+kfzf watch clusters.postgresql.cnpg.io
+
+# Watch ArgoCD applications
+kfzf watch applications.argoproj.io
+```
+
 ## Architecture
 
 ```
