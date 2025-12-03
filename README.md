@@ -43,44 +43,23 @@ kfzf server -f --log-level=debug
 
 ### Systemd user service (recommended)
 
-For automatic startup, create a systemd user service:
+For automatic startup, use the built-in systemd command:
 
 ```bash
-mkdir -p ~/.config/systemd/user
+# Preview the service file
+kfzf systemd
 
-cat > ~/.config/systemd/user/kfzf.service << 'EOF'
-[Unit]
-Description=kfzf - kubectl completion server
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=%h/.local/bin/kfzf server -f
-Restart=on-failure
-RestartSec=5
-Environment=KUBECONFIG=%h/.kube/config
-
-[Install]
-WantedBy=default.target
-EOF
-
-# Enable and start the service
-systemctl --user daemon-reload
-systemctl --user enable kfzf
-systemctl --user start kfzf
+# Install and enable the service
+kfzf systemd --install
 
 # Check status
 systemctl --user status kfzf
 
 # View logs
 journalctl --user -u kfzf -f
-```
 
-To use with merged kubeconfigs:
-
-```bash
-# If you merge multiple kubeconfigs, point to the merged file
-Environment=KUBECONFIG=%h/.kube/flatten_config
+# Uninstall the service
+kfzf systemd --uninstall
 ```
 
 ### Get completions
