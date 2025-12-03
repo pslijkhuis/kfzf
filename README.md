@@ -165,29 +165,31 @@ By default, kfzf watches these resource types:
 - namespaces, nodes
 - deployments, statefulsets, daemonsets
 
-**What happens with unwatched resources?**
+**Auto-watch on first completion**
 
-When you try to complete a resource type that isn't being watched, you'll get empty results. To add more resource types:
+When you try to complete a resource type that isn't being watched, kfzf automatically starts watching it. The first completion may be slow (fetching initial data), but subsequent completions are instant.
 
 ```bash
-# Start watching additional resources
-kfzf watch replicasets jobs cronjobs
-
-# Stop watching resources
-kfzf watch --stop replicasets
+# First completion of replicasets - triggers auto-watch
+kubectl get replicasets <Tab>  # starts watching, then completes
 
 # Check what's being watched
 kfzf status
 ```
 
-Watches persist as long as the server is running. For CRDs and other resource types, you can add them dynamically:
+**Manual watch management**
+
+You can also manage watches explicitly:
 
 ```bash
-# Watch CNPG clusters
-kfzf watch clusters.postgresql.cnpg.io
+# Pre-watch resources for instant first completion
+kfzf watch replicasets jobs cronjobs
 
-# Watch ArgoCD applications
-kfzf watch applications.argoproj.io
+# Stop watching resources to save memory
+kfzf watch --stop replicasets
+
+# Watch CRDs
+kfzf watch clusters.postgresql.cnpg.io applications.argoproj.io
 ```
 
 ## Architecture
