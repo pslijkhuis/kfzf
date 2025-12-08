@@ -305,9 +305,9 @@ func TestConfigPath(t *testing.T) {
 func TestConfigPath_XDG(t *testing.T) {
 	// Save original and restore after test
 	original := os.Getenv("XDG_CONFIG_HOME")
-	defer os.Setenv("XDG_CONFIG_HOME", original)
+	defer func() { _ = os.Setenv("XDG_CONFIG_HOME", original) }()
 
-	os.Setenv("XDG_CONFIG_HOME", "/custom/config")
+	_ = os.Setenv("XDG_CONFIG_HOME", "/custom/config")
 	path := ConfigPath()
 
 	if path != "/custom/config/kfzf/config.yaml" {
@@ -337,7 +337,7 @@ func TestLoadFrom_NonExistent(t *testing.T) {
 		t.Errorf("LoadFrom(nonexistent) should not error, got %v", err)
 	}
 	if cfg == nil {
-		t.Error("LoadFrom(nonexistent) should return default config")
+		t.Fatal("LoadFrom(nonexistent) should return default config")
 	}
 	// Should have default resources
 	if _, ok := cfg.Resources["pods"]; !ok {

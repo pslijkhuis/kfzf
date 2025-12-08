@@ -38,7 +38,7 @@ func (c *Client) IsServerRunning() bool {
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	_ = conn.Close()
 	return true
 }
 
@@ -274,10 +274,10 @@ func (c *Client) sendRequest(req *server.Request) (*server.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Set write deadline
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 
 	data, err := server.EncodeRequest(req)
 	if err != nil {
@@ -289,7 +289,7 @@ func (c *Client) sendRequest(req *server.Request) (*server.Response, error) {
 	}
 
 	// Set read deadline
-	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 	reader := bufio.NewReader(conn)
 	respData, err := reader.ReadBytes('\n')
