@@ -155,6 +155,61 @@ func (m *WatchManager) cleanupWatch(contextName string, gvr schema.GroupVersionR
 	}
 }
 
+// pruneObject removes large fields that aren't needed for completion
+// This significantly reduces memory usage for secrets, configmaps, etc.
+func pruneObject(obj *unstructured.Unstructured) {
+	o := obj.Object
+
+	// Remove data/binaryData from secrets and configmaps (can be huge)
+	delete(o, "data")
+	delete(o, "binaryData")
+	delete(o, "stringData")
+
+	// Remove managedFields from metadata (verbose, not needed)
+	if metadata, ok := o["metadata"].(map[string]interface{}); ok {
+		delete(metadata, "managedFields")
+		// Remove annotations we don't need (can be large, e.g., last-applied-config)
+		if annotations, ok := metadata["annotations"].(map[string]interface{}); ok {
+			delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
+		}
+	}
+
+	// For pods, prune container env/volumeMounts which can be large
+	if spec, ok := o["spec"].(map[string]interface{}); ok {
+		pruneContainerList(spec, "containers")
+		pruneContainerList(spec, "initContainers")
+		// Remove volumes (not needed for completion)
+		delete(spec, "volumes")
+	}
+}
+
+// pruneContainerList prunes unnecessary fields from containers
+func pruneContainerList(spec map[string]interface{}, key string) {
+	containers, ok := spec[key].([]interface{})
+	if !ok {
+		return
+	}
+	for _, c := range containers {
+		container, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// Keep: name, image, ports
+		// Remove: env, envFrom, volumeMounts, resources, etc.
+		delete(container, "env")
+		delete(container, "envFrom")
+		delete(container, "volumeMounts")
+		delete(container, "resources")
+		delete(container, "livenessProbe")
+		delete(container, "readinessProbe")
+		delete(container, "startupProbe")
+		delete(container, "lifecycle")
+		delete(container, "securityContext")
+		delete(container, "command")
+		delete(container, "args")
+	}
+}
+
 // runWatch performs a single watch iteration (list + watch)
 func (m *WatchManager) runWatch(ctx context.Context, contextName string, gvr schema.GroupVersionResource, namespaced bool) error {
 	client, err := m.clientManager.GetClient(contextName)
@@ -184,6 +239,7 @@ func (m *WatchManager) runWatch(ctx context.Context, contextName string, gvr sch
 	// Clear existing resources and add new ones
 	m.store.Clear(contextName, gvr)
 	for i := range list.Items {
+		pruneObject(&list.Items[i])
 		m.store.Add(contextName, gvr, &list.Items[i])
 	}
 	m.store.SetWatching(contextName, gvr, true)
@@ -221,6 +277,7 @@ func (m *WatchManager) runWatch(ctx context.Context, contextName string, gvr sch
 
 			switch event.Type {
 			case watch.Added:
+				pruneObject(obj)
 				m.store.Add(contextName, gvr, obj)
 				m.logger.Debug("resource added",
 					"context", contextName,
@@ -230,6 +287,7 @@ func (m *WatchManager) runWatch(ctx context.Context, contextName string, gvr sch
 				)
 			case watch.Modified:
 				// Update store directly - skip expensive diff for memory efficiency
+				pruneObject(obj)
 				m.store.Add(contextName, gvr, obj)
 				m.logger.Debug("resource modified",
 					"context", contextName,
