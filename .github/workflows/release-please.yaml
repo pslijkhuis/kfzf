@@ -1,0 +1,59 @@
+---
+name: Release Please
+
+on:
+  push:
+    branches:
+    - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+    - uses: googleapis/release-please-action@v4
+      id: release
+      with:
+        release-type: go
+
+  build-release:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+
+    - name: Build binaries
+      run: |
+        VERSION=${{ needs.release-please.outputs.tag_name }}
+        LDFLAGS="-X main.version=${VERSION}"
+
+        GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o kfzf-linux-amd64 ./cmd/kfzf
+        GOOS=linux GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o kfzf-linux-arm64 ./cmd/kfzf
+        GOOS=darwin GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o kfzf-darwin-amd64 ./cmd/kfzf
+        GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o kfzf-darwin-arm64 ./cmd/kfzf
+
+    - name: Create checksums
+      run: sha256sum kfzf-* > checksums.txt
+
+    - name: Upload release artifacts
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |-
+        gh release upload ${{ needs.release-please.outputs.tag_name }} \
+          kfzf-linux-amd64 \
+          kfzf-linux-arm64 \
+          kfzf-darwin-amd64 \
+          kfzf-darwin-arm64 \
+          checksums.txt
