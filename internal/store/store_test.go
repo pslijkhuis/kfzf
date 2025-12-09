@@ -81,7 +81,7 @@ func TestStore_BasicOperations(t *testing.T) {
 	// Verify it exists
 	res := s.Get(context, gvr, "default", "pod-1")
 	if res == nil {
-		t.Error("expected pod-1 to exist")
+		t.Fatal("expected pod-1 to exist")
 	}
 	if res.Name != "pod-1" {
 		t.Errorf("expected name pod-1, got %s", res.Name)

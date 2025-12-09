@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"reflect"
-	"strings"
 	"sync"
 	"time"
 
@@ -155,6 +153,61 @@ func (m *WatchManager) cleanupWatch(contextName string, gvr schema.GroupVersionR
 	}
 }
 
+// pruneObject removes large fields that aren't needed for completion
+// This significantly reduces memory usage for secrets, configmaps, etc.
+func pruneObject(obj *unstructured.Unstructured) {
+	o := obj.Object
+
+	// Remove data/binaryData from secrets and configmaps (can be huge)
+	delete(o, "data")
+	delete(o, "binaryData")
+	delete(o, "stringData")
+
+	// Remove managedFields from metadata (verbose, not needed)
+	if metadata, ok := o["metadata"].(map[string]interface{}); ok {
+		delete(metadata, "managedFields")
+		// Remove annotations we don't need (can be large, e.g., last-applied-config)
+		if annotations, ok := metadata["annotations"].(map[string]interface{}); ok {
+			delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
+		}
+	}
+
+	// For pods, prune container env/volumeMounts which can be large
+	if spec, ok := o["spec"].(map[string]interface{}); ok {
+		pruneContainerList(spec, "containers")
+		pruneContainerList(spec, "initContainers")
+		// Remove volumes (not needed for completion)
+		delete(spec, "volumes")
+	}
+}
+
+// pruneContainerList prunes unnecessary fields from containers
+func pruneContainerList(spec map[string]interface{}, key string) {
+	containers, ok := spec[key].([]interface{})
+	if !ok {
+		return
+	}
+	for _, c := range containers {
+		container, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// Keep: name, image, ports
+		// Remove: env, envFrom, volumeMounts, resources, etc.
+		delete(container, "env")
+		delete(container, "envFrom")
+		delete(container, "volumeMounts")
+		delete(container, "resources")
+		delete(container, "livenessProbe")
+		delete(container, "readinessProbe")
+		delete(container, "startupProbe")
+		delete(container, "lifecycle")
+		delete(container, "securityContext")
+		delete(container, "command")
+		delete(container, "args")
+	}
+}
+
 // runWatch performs a single watch iteration (list + watch)
 func (m *WatchManager) runWatch(ctx context.Context, contextName string, gvr schema.GroupVersionResource, namespaced bool) error {
 	client, err := m.clientManager.GetClient(contextName)
@@ -184,6 +237,7 @@ func (m *WatchManager) runWatch(ctx context.Context, contextName string, gvr sch
 	// Clear existing resources and add new ones
 	m.store.Clear(contextName, gvr)
 	for i := range list.Items {
+		pruneObject(&list.Items[i])
 		m.store.Add(contextName, gvr, &list.Items[i])
 	}
 	m.store.SetWatching(contextName, gvr, true)
@@ -221,6 +275,7 @@ func (m *WatchManager) runWatch(ctx context.Context, contextName string, gvr sch
 
 			switch event.Type {
 			case watch.Added:
+				pruneObject(obj)
 				m.store.Add(contextName, gvr, obj)
 				m.logger.Debug("resource added",
 					"context", contextName,
@@ -230,6 +285,7 @@ func (m *WatchManager) runWatch(ctx context.Context, contextName string, gvr sch
 				)
 			case watch.Modified:
 				// Update store directly - skip expensive diff for memory efficiency
+				pruneObject(obj)
 				m.store.Add(contextName, gvr, obj)
 				m.logger.Debug("resource modified",
 					"context", contextName,
@@ -308,267 +364,4 @@ func (m *WatchManager) StopContext(contextName string) {
 
 	// Also clear any remaining context data from the store
 	m.store.ClearContext(contextName)
-}
-
-// ANSI color codes for diff output
-const (
-	colorReset  = "\033[0m"
-	colorRed    = "\033[31m"
-	colorGreen  = "\033[32m"
-	colorYellow = "\033[33m"
-	colorCyan   = "\033[36m"
-	colorDim    = "\033[2m"
-)
-
-// skipFields contains fields to ignore when diffing objects (always change or too noisy)
-var diffSkipFields = map[string]bool{
-	"metadata.resourceVersion":   true,
-	"metadata.managedFields":     true,
-	"metadata.generation":        true,
-	"metadata.uid":               true,
-	"metadata.creationTimestamp": true,
-}
-
-// diffObjects compares two unstructured objects and returns a list of changes
-func diffObjects(old, new map[string]interface{}) []string {
-	var changes []string
-	diffMaps("", old, new, &changes)
-	return changes
-}
-
-// diffMaps recursively compares two maps and collects differences
-func diffMaps(prefix string, old, new map[string]interface{}, changes *[]string) {
-	// Check for modified and added keys
-	for key, newVal := range new {
-		path := key
-		if prefix != "" {
-			path = prefix + "." + key
-		}
-
-		if diffSkipFields[path] {
-			continue
-		}
-
-		oldVal, exists := old[key]
-		if !exists {
-			*changes = append(*changes, fmt.Sprintf("%s[+]%s %s%s%s = %s%v%s", colorGreen, colorReset, colorCyan, path, colorReset, colorGreen, formatValue(newVal), colorReset))
-			continue
-		}
-
-		if !reflect.DeepEqual(oldVal, newVal) {
-			// If both are maps, recurse
-			oldMap, oldIsMap := oldVal.(map[string]interface{})
-			newMap, newIsMap := newVal.(map[string]interface{})
-			if oldIsMap && newIsMap {
-				diffMaps(path, oldMap, newMap, changes)
-				continue
-			}
-
-			// If both are slices, diff them specially
-			oldSlice, oldIsSlice := oldVal.([]interface{})
-			newSlice, newIsSlice := newVal.([]interface{})
-			if oldIsSlice && newIsSlice {
-				sliceChanges := diffSlices(path, oldSlice, newSlice)
-				*changes = append(*changes, sliceChanges...)
-				continue
-			}
-
-			*changes = append(*changes, fmt.Sprintf("%s[~]%s %s%s%s: %s%v%s → %s%v%s", colorYellow, colorReset, colorCyan, path, colorReset, colorRed, formatValue(oldVal), colorReset, colorGreen, formatValue(newVal), colorReset))
-		}
-	}
-
-	// Check for removed keys
-	for key, oldVal := range old {
-		path := key
-		if prefix != "" {
-			path = prefix + "." + key
-		}
-
-		if diffSkipFields[path] {
-			continue
-		}
-
-		if _, exists := new[key]; !exists {
-			*changes = append(*changes, fmt.Sprintf("%s[-]%s %s%s%s = %s%v%s", colorRed, colorReset, colorCyan, path, colorReset, colorRed, formatValue(oldVal), colorReset))
-		}
-	}
-}
-
-// diffSlices compares two slices and returns meaningful changes
-func diffSlices(path string, old, new []interface{}) []string {
-	changes := make([]string, 0, 4) // Pre-allocate for typical case
-
-	// For condition arrays, compare by type field
-	if strings.Contains(path, "conditions") {
-		oldByType := indexConditionsByType(old)
-		newByType := indexConditionsByType(new)
-
-		for condType, newCond := range newByType {
-			oldCond, exists := oldByType[condType]
-			if !exists {
-				changes = append(changes, fmt.Sprintf("%s[+]%s %s%s[%s]%s", colorGreen, colorReset, colorCyan, path, condType, colorReset))
-				continue
-			}
-			// Compare status field
-			oldStatus := getMapField(oldCond, "status")
-			newStatus := getMapField(newCond, "status")
-			if oldStatus != newStatus {
-				changes = append(changes, fmt.Sprintf("%s[~]%s %s%s[%s].status%s: %s%v%s → %s%v%s", colorYellow, colorReset, colorCyan, path, condType, colorReset, colorRed, oldStatus, colorReset, colorGreen, newStatus, colorReset))
-			}
-			// Compare reason field if it changed
-			oldReason := getMapField(oldCond, "reason")
-			newReason := getMapField(newCond, "reason")
-			if oldReason != newReason && newReason != "" {
-				changes = append(changes, fmt.Sprintf("%s[~]%s %s%s[%s].reason%s: %s%v%s → %s%v%s", colorYellow, colorReset, colorCyan, path, condType, colorReset, colorRed, oldReason, colorReset, colorGreen, newReason, colorReset))
-			}
-		}
-
-		for condType := range oldByType {
-			if _, exists := newByType[condType]; !exists {
-				changes = append(changes, fmt.Sprintf("%s[-]%s %s%s[%s]%s", colorRed, colorReset, colorCyan, path, condType, colorReset))
-			}
-		}
-		return changes
-	}
-
-	// For container arrays, compare by name
-	if strings.Contains(path, "containers") {
-		oldByName := indexByName(old)
-		newByName := indexByName(new)
-
-		for name, newContainer := range newByName {
-			oldContainer, exists := oldByName[name]
-			if !exists {
-				changes = append(changes, fmt.Sprintf("%s[+]%s %s%s[%s]%s", colorGreen, colorReset, colorCyan, path, name, colorReset))
-				continue
-			}
-			// Check image changes
-			oldImage := getMapField(oldContainer, "image")
-			newImage := getMapField(newContainer, "image")
-			if oldImage != newImage {
-				changes = append(changes, fmt.Sprintf("%s[~]%s %s%s[%s].image%s: %s%v%s → %s%v%s", colorYellow, colorReset, colorCyan, path, name, colorReset, colorRed, oldImage, colorReset, colorGreen, newImage, colorReset))
-			}
-		}
-
-		for name := range oldByName {
-			if _, exists := newByName[name]; !exists {
-				changes = append(changes, fmt.Sprintf("%s[-]%s %s%s[%s]%s", colorRed, colorReset, colorCyan, path, name, colorReset))
-			}
-		}
-		return changes
-	}
-
-	// For containerStatuses, compare by name and show state changes
-	if strings.Contains(path, "containerStatuses") {
-		oldByName := indexByName(old)
-		newByName := indexByName(new)
-
-		for name, newStatus := range newByName {
-			oldStatus, exists := oldByName[name]
-			if !exists {
-				changes = append(changes, fmt.Sprintf("%s[+]%s %s%s[%s]%s", colorGreen, colorReset, colorCyan, path, name, colorReset))
-				continue
-			}
-			// Check ready state
-			oldReady := getMapField(oldStatus, "ready")
-			newReady := getMapField(newStatus, "ready")
-			if oldReady != newReady {
-				changes = append(changes, fmt.Sprintf("%s[~]%s %s%s[%s].ready%s: %s%v%s → %s%v%s", colorYellow, colorReset, colorCyan, path, name, colorReset, colorRed, oldReady, colorReset, colorGreen, newReady, colorReset))
-			}
-			// Check restart count
-			oldRestarts := getMapField(oldStatus, "restartCount")
-			newRestarts := getMapField(newStatus, "restartCount")
-			if oldRestarts != newRestarts {
-				changes = append(changes, fmt.Sprintf("%s[~]%s %s%s[%s].restartCount%s: %s%v%s → %s%v%s", colorYellow, colorReset, colorCyan, path, name, colorReset, colorRed, oldRestarts, colorReset, colorGreen, newRestarts, colorReset))
-			}
-			// Check state changes
-			oldState := getContainerState(oldStatus)
-			newState := getContainerState(newStatus)
-			if oldState != newState {
-				changes = append(changes, fmt.Sprintf("%s[~]%s %s%s[%s].state%s: %s%v%s → %s%v%s", colorYellow, colorReset, colorCyan, path, name, colorReset, colorRed, oldState, colorReset, colorGreen, newState, colorReset))
-			}
-		}
-		return changes
-	}
-
-	// Generic slice comparison - just report size change or that it changed
-	if len(old) != len(new) {
-		changes = append(changes, fmt.Sprintf("%s[~]%s %s%s%s: len %s%d%s → %s%d%s", colorYellow, colorReset, colorCyan, path, colorReset, colorRed, len(old), colorReset, colorGreen, len(new), colorReset))
-	} else if !reflect.DeepEqual(old, new) {
-		changes = append(changes, fmt.Sprintf("%s[~]%s %s%s%s: %s(changed)%s", colorYellow, colorReset, colorCyan, path, colorReset, colorDim, colorReset))
-	}
-	return changes
-}
-
-// indexConditionsByType indexes a conditions array by the "type" field
-func indexConditionsByType(conditions []interface{}) map[string]map[string]interface{} {
-	result := make(map[string]map[string]interface{}, len(conditions))
-	for _, c := range conditions {
-		if cond, ok := c.(map[string]interface{}); ok {
-			if t, ok := cond["type"].(string); ok {
-				result[t] = cond
-			}
-		}
-	}
-	return result
-}
-
-// indexByName indexes an array by the "name" field
-func indexByName(items []interface{}) map[string]map[string]interface{} {
-	result := make(map[string]map[string]interface{}, len(items))
-	for _, item := range items {
-		if m, ok := item.(map[string]interface{}); ok {
-			if name, ok := m["name"].(string); ok {
-				result[name] = m
-			}
-		}
-	}
-	return result
-}
-
-// getMapField safely gets a field from a map
-func getMapField(m map[string]interface{}, field string) interface{} {
-	if m == nil {
-		return nil
-	}
-	return m[field]
-}
-
-// getContainerState returns the current state of a container (running, waiting, terminated)
-func getContainerState(status map[string]interface{}) string {
-	state, ok := status["state"].(map[string]interface{})
-	if !ok {
-		return "unknown"
-	}
-	if _, ok := state["running"]; ok {
-		return "running"
-	}
-	if w, ok := state["waiting"].(map[string]interface{}); ok {
-		if reason, ok := w["reason"].(string); ok {
-			return "waiting:" + reason
-		}
-		return "waiting"
-	}
-	if t, ok := state["terminated"].(map[string]interface{}); ok {
-		if reason, ok := t["reason"].(string); ok {
-			return "terminated:" + reason
-		}
-		return "terminated"
-	}
-	return "unknown"
-}
-
-// formatValue formats a value for display, truncating long values
-func formatValue(v interface{}) string {
-	if v == nil {
-		return "<nil>"
-	}
-	s := fmt.Sprintf("%v", v)
-	if s == "" {
-		return "<empty>"
-	}
-	if len(s) > 60 {
-		return s[:57] + "..."
-	}
-	return s
 }

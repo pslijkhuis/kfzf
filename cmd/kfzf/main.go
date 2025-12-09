@@ -625,7 +625,7 @@ Add this to your .zshrc:
 Or save to a file:
   kfzf zsh-completion > ~/.zsh/completions/_kfzf_kubectl`,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s", zshCompletionScript) //nolint:gosimple
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s", zshCompletionScript)
 		},
 	}
 }
@@ -656,7 +656,7 @@ Examples:
 				// Stop and disable service
 				exec := func(args ...string) {
 					c := execCommand("systemctl", args...)
-					c.Run()
+					_ = c.Run()
 				}
 				exec("--user", "stop", "kfzf.service")
 				exec("--user", "disable", "kfzf.service")

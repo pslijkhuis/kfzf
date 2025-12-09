@@ -55,8 +55,8 @@ func (f *Formatter) Format(resources []*store.Resource, resourceType string) str
 			}
 			value := f.extractField(res.Object, col.Field, res.CreationTimestamp)
 			if col.Width > 0 {
-				if col.Field == ".metadata.namespace" {
-					// Pad namespace but never truncate (needed for -A completion)
+				if col.Field == ".metadata.name" || col.Field == ".metadata.namespace" {
+					// Pad name/namespace but never truncate (needed for completion)
 					value = f.padOnly(value, col.Width)
 				} else {
 					value = f.truncateOrPad(value, col.Width)
@@ -168,8 +168,8 @@ func (f *Formatter) FormatWithHeader(resources []*store.Resource, resourceType s
 			}
 			value := f.extractField(res.Object, col.Field, res.CreationTimestamp)
 			if col.Width > 0 {
-				if col.Field == ".metadata.namespace" {
-					// Pad namespace but never truncate (needed for -A completion)
+				if col.Field == ".metadata.name" || col.Field == ".metadata.namespace" {
+					// Pad name/namespace but never truncate (needed for completion)
 					value = f.padOnly(value, col.Width)
 				} else {
 					value = f.truncateOrPad(value, col.Width)

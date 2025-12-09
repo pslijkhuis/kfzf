@@ -34,7 +34,6 @@ type Server struct {
 	listener  net.Listener
 	startTime time.Time
 
-	mu       sync.Mutex
 	shutdown bool
 
 	// Semaphore for limiting concurrent connections
@@ -126,8 +125,8 @@ func (s *Server) Start(ctx context.Context) error {
 	s.logger.Info("shutting down server")
 	s.shutdown = true
 	s.watchManager.StopAll()
-	s.listener.Close()
-	os.Remove(socketPath)
+	_ = s.listener.Close()
+	_ = os.Remove(socketPath)
 
 	return nil
 }
@@ -205,7 +204,7 @@ func (s *Server) acceptConnections(ctx context.Context) {
 				s.handleConnection(ctx, conn)
 			}()
 		case <-ctx.Done():
-			conn.Close()
+			_ = conn.Close()
 			return
 		}
 	}
@@ -213,7 +212,7 @@ func (s *Server) acceptConnections(ctx context.Context) {
 
 // handleConnection handles a single client connection
 func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -223,7 +222,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	}()
 
 	// Set read deadline
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 
 	reader := bufio.NewReader(conn)
 	data, err := reader.ReadBytes('\n')
@@ -277,7 +276,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	conn.Write(respData)
+	_, _ = conn.Write(respData)
 }
 
 // handleComplete handles a completion request
@@ -1081,7 +1080,7 @@ func (s *Server) cleanupOldContexts(maxAge time.Duration) {
 func (s *Server) sendError(conn net.Conn, msg string) {
 	resp := &Response{Success: false, Error: msg}
 	data, _ := EncodeResponse(resp)
-	conn.Write(data)
+	_, _ = conn.Write(data)
 }
 
 // isKnownNamespaced returns whether a resource type is namespaced
